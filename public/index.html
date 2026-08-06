@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+  <meta name="theme-color" content="#cc0000"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="ANIMALdex"/>
+  <link rel="manifest" href="manifest.json"/>
+  <link rel="apple-touch-icon" href="icon.png"/>
+  <title>ANIMALdex — Zoological Scanner</title>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet"/>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body{height:100%;background:#1a0000;font-family:'Press Start 2P',monospace;overflow-x:hidden}
+    input[type=file]{display:none}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+    @keyframes scanLine{0%{top:-4px}100%{top:100%}}
+    @keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+    @keyframes blink{0%,100%{opacity:1}50%{opacity:0.2}}
+    @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+    .pulse{animation:pulse 2s infinite}
+    .scan-line{animation:scanLine 1.2s linear infinite}
+    .fade-up{animation:fadeUp 0.4s ease forwards}
+    .blink{animation:blink 0.5s infinite}
+    .spin{animation:spin 1s linear infinite}
+    .scanlines{position:absolute;inset:0;pointer-events:none;z-index:10;
+      background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.07) 2px,rgba(0,0,0,0.07) 4px)}
+    ::-webkit-scrollbar{width:4px}
+    ::-webkit-scrollbar-track{background:#1a0a0a}
+    ::-webkit-scrollbar-thumb{background:#cc0000;border-radius:2px}
+    .card:hover{background:rgba(0,255,100,0.09)!important}
+    .btn{font-family:'Press Start 2P',monospace;cursor:pointer;border:none;transition:all 0.1s}
+    .btn:active{transform:translateY(2px)}
+  </style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const TYPE_COLORS={Terrestre:"#A0522D",Aquatique:"#4A90D9","Aérien":"#87CEEB",Nocturne:"#4B0082",Diurne:"#FFD700",Venimeux:"#9ACD32","Prédateur":"#CC2200",Herbivore:"#228B22",Social:"#FF69B4",Solitaire:"#708090"};
+const CONS_COLORS={LC:"#78C850",NT:"#A8B820",VU:"#F08030",EN:"#F08030",CR:"#C03028",EX:"#705848"};
+const COLL_KEY="animaldex_v4_collection";
+
+let S={
+  tab:"scan",
+  image:null,result:null,error:null,
+  loading:false,converting:false,scanning:false,progress:0,
+  collection:JSON.parse(localStorage.getItem(COLL_KEY)||"[]"),
+  viewEntry:null
+};
+function set(p){S={...S,...p};render()}
+
+function saveCollection(col){
+  const c=col.slice(0,100);
+  localStorage.setItem(COLL_KEY,JSON.stringify(c));
+  set({collection:c});
+}
+
+const convertToJpeg=(file)=>new Promise((resolve,reject)=>{
+  const r=new FileReader();
+  r.onerror=()=>reject(new Error("Lecture échouée"));
+  r.onload=e=>{
+    const img=new Image();
+    img.onerror=()=>reject(new Error("Format non supporté. Utilise 📷 CAMÉRA."));
+    img.onload=()=>{
+      const c=document.createElement("canvas");
+      const MAX=1024;let{width:w,height:h}=img;
+      if(w>MAX||h>MAX){if(w>h){h=Math.round(h*MAX/w);w=MAX}else{w=Math.round(w*MAX/h);h=MAX}}
+      c.width=w;c.height=h;c.getContext("2d").drawImage(img,0,0,w,h);
+      resolve(c.toDataURL("image/jpeg",0.82));
+    };
+    img.src=e.target.result;
+  };
+  r.readAsDataURL(file);
+});
+
+const led=(on,col)=>`<div style="width:12px;height:12px;border-radius:50%;background:${on?col:"#5a1a1a"};box-shadow:${on?`0 0 8px ${col},0 0 16px ${col}66`:"inset 0 1px 3px rgba(0,0,0,0.5)"};border:1px solid rgba(0,0,0,0.3);transition:all 0.3s"></div>`;
+const badge=(t)=>{if(!t)return"";const c=TYPE_COLORS[t]||"#888";return`<span style="display:inline-block;background:${c};color:#fff;font-size:9px;font-weight:700;font-family:'Press Start 2P',monospace;padding:3px 7px;border-radius:4px;text-transform:uppercase;border:2px solid rgba(0,0,0,0.25)">${t}</span>`};
+const statBar=(l,v,c)=>`<div style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="font-size:8px;color:#ccc">${l}</span><span style="font-size:8px;color:#fff">${v}</span></div><div style="background:#1a0a0a;height:10px;border-radius:2px;border:1px solid #333;overflow:hidden"><div style="width:${v}%;height:100%;background:linear-gradient(90deg,${c},${c}aa);box-shadow:0 0 6px ${c}88;transition:width 1s"></div></div></div>`;
+const infoBox=(l,bg,bc,lc,tc,v)=>`<div style="margin-top:8px;padding:8px 10px;background:${bg};border:1px solid ${bc};border-radius:4px"><div style="color:${lc};font-size:7px;margin-bottom:4px">${l}</div><div style="color:${tc};line-height:1.8;font-family:'VT323',monospace;font-size:13px">${v||""}</div></div>`;
+
+function screenHTML(){
+  const{converting,scanning,progress,error,result,viewEntry,loading}=S;
+  const dr=viewEntry?viewEntry.result:result;
+  const di=viewEntry?viewEntry.image:S.image;
+
+  if(converting)return`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:240px;gap:14px"><div class="spin" style="font-size:28px">⚙️</div><div class="pulse" style="color:#ffaa44;font-size:8px">CONVERSION...</div></div>`;
+
+  if(di&&!converting){
+    const overlay=scanning?`<div class="scan-line" style="position:absolute;left:0;right:0;height:4px;background:linear-gradient(90deg,transparent,#00ff88,transparent);box-shadow:0 0 12px #00ff88;z-index:5"></div><div style="position:absolute;inset:0;z-index:4;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,20,0,0.5);gap:12px"><div class="pulse" style="color:#00ff88;font-size:9px;letter-spacing:2px">ANALYSE...</div><div style="width:160px;height:8px;background:#001a00;border:1px solid #004400;border-radius:4px;overflow:hidden"><div style="width:${progress}%;height:100%;background:linear-gradient(90deg,#00aa44,#00ff88);transition:width 0.2s"></div></div><div style="color:#006622;font-size:8px">${Math.round(progress)}%</div></div>`:"";
+    if(scanning||(!dr&&!error))return`<div style="position:relative;height:240px"><img src="${di}" style="width:100%;height:240px;object-fit:cover;display:block;filter:${scanning?"brightness(0.35) saturate(0.2) hue-rotate(100deg)":"none"}"/>${overlay}</div>`;
+  }
+
+  if(error&&!loading)return`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:240px;padding:20px;gap:10px"><div style="font-size:28px">⚠️</div><div style="color:#ff4444;font-size:8px;text-align:center">ERREUR SCANNER</div><div style="color:#ff7766;font-size:7px;text-align:center;line-height:1.8;font-family:monospace;word-break:break-word">${error}</div></div>`;
+
+  if(dr&&!dr.found)return`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:240px;gap:12px"><div style="font-size:30px">🔍</div><div style="color:#ffaa44;font-size:8px;text-align:center;line-height:2">AUCUN ANIMAL DÉTECTÉ</div></div>`;
+
+  if(dr&&dr.found){
+    const cc=CONS_COLORS[dr.conservation]||"#666";
+    return`<div class="fade-up" style="padding:14px">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px">
+        <div>
+          <div style="color:#00ff88;font-size:14px;letter-spacing:1px">#${dr.numero}</div>
+          <div style="color:#fff;font-size:10px;margin-top:4px">${(dr.nomCommun||"").toUpperCase()}</div>
+          <div style="color:#888;margin-top:4px;font-style:italic;font-family:'VT323',monospace;font-size:13px">${dr.nomScientifique||""}</div>
+        </div>
+        <div style="background:${cc};color:#fff;padding:4px 8px;border-radius:4px;font-size:8px;font-weight:700;border:2px solid rgba(0,0,0,0.3);flex-shrink:0">${dr.conservation||""}</div>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">${badge(dr.type1)}${badge(dr.type2)}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        ${[["CLASSE",dr.classe],["RÉGIME",dr.regime],["TAILLE",dr.taille],["POIDS",dr.poids]].map(([l,v])=>`<div style="background:rgba(0,255,100,0.05);border:1px solid #004422;border-radius:4px;padding:5px 7px"><div style="color:#006622;font-size:7px;margin-bottom:2px">${l}</div><div style="color:#aaffcc;font-size:7px">${v||"—"}</div></div>`).join("")}
+      </div>
+    </div>`;
+  }
+
+  return`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:240px;gap:14px"><div class="pulse" style="font-size:40px;filter:drop-shadow(0 0 8px #00ff88)">🦎</div><div style="color:#00cc44;font-size:9px;text-align:center;line-height:2">PRÊT À SCANNER</div><div style="color:#004411;font-size:7px;text-align:center">JPEG · PNG · HEIC · HEIF</div></div>`;
+}
+
+function detailHTML(){
+  const dr=S.viewEntry?S.viewEntry.result:S.result;
+  if(!dr||!dr.found)return"";
+  const cv={LC:95,NT:75,VU:50,EN:30,CR:15,EX:5};
+  const stats={"DÉCOUVERTE":parseInt(dr.numero)||42,"VITALITÉ":cv[dr.conservation]||50,"RARETÉ":100-(cv[dr.conservation]||50),"CONFIANCE":dr.confiance==="haute"?90:dr.confiance==="moyenne"?60:35};
+  return`<div class="fade-up" style="margin-top:10px;background:#0d1a0d;border:2px solid #222;border-radius:8px;padding:14px;position:relative">
+    <div class="scanlines"></div>
+    ${Object.entries(stats).map(([k,v])=>statBar(k,v,k==="RARETÉ"?"#ff6644":k==="CONFIANCE"?"#44aaff":"#00cc55")).join("")}
+    ${infoBox("HABITAT","rgba(0,100,50,0.1)","#003322","#006622","#88ccaa",dr.habitat)}
+    ${infoBox("DONNÉES","rgba(0,50,100,0.1)","#001133","#004488","#88aacc",dr.description)}
+    ${infoBox("⚡ FAIT RARE","rgba(100,80,0,0.1)","#332200","#664400","#ccaa66",dr.anecdote)}
+    <div style="margin-top:8px;text-align:center;font-size:8px;color:${CONS_COLORS[dr.conservation]||"#888"}">${dr.conservationLabel||""}</div>
+    ${S.viewEntry?`<div style="margin-top:6px;text-align:center;font-size:7px;color:#555">Scanné le ${S.viewEntry.date}</div>`:""}
+  </div>`;
+}
+
+function collectionHTML(){
+  const{collection}=S;
+  if(collection.length===0)return`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:260px;gap:14px"><div class="pulse" style="font-size:36px">📭</div><div style="color:#006622;font-size:8px;text-align:center;line-height:2">COLLECTION VIDE<br/><span style="color:#004411;font-size:7px">SCANNE TON PREMIER ANIMAL</span></div></div>`;
+  return`<div style="display:flex;flex-direction:column;gap:8px;max-height:500px;overflow-y:auto;padding-right:2px">
+    ${collection.map((e,i)=>`<div class="card" onclick="openEntry(${i})" style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(0,255,100,0.04);border:1px solid #004422;border-radius:6px;cursor:pointer;transition:background 0.2s">
+      <img src="${e.image}" style="width:44px;height:44px;object-fit:cover;border-radius:4px;border:1px solid #003322;flex-shrink:0"/>
+      <div style="flex:1;min-width:0">
+        <div style="color:#00ff88;font-size:7px">#${e.result.numero}</div>
+        <div style="color:#fff;font-size:7px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(e.result.nomCommun||"").toUpperCase()}</div>
+        <div style="color:#888;font-size:11px;font-family:'VT323',monospace;margin-top:1px">${e.result.nomScientifique||""}</div>
+      </div>
+      <div style="text-align:center;flex-shrink:0">
+        <div style="background:${CONS_COLORS[e.result.conservation]||"#666"};color:#fff;font-size:6px;font-family:'Press Start 2P',monospace;padding:2px 5px;border-radius:3px;margin-bottom:4px">${e.result.conservation||""}</div>
+        <div style="color:#555;font-size:9px;font-family:'VT323',monospace">${e.date||""}</div>
+      </div>
+    </div>`).join("")}
+  </div>
+  <div style="margin-top:12px;text-align:center">
+    <button onclick="clearCollection()" class="btn" style="background:transparent;color:#440000;border:1px solid #440000;border-radius:4px;padding:6px 12px;font-size:6px">🗑 VIDER LA COLLECTION</button>
+  </div>`;
+}
+
+function render(){
+  const{tab,loading,converting,result,error,collection,viewEntry}=S;
+  const isWorking=loading||converting;
+  const dr=viewEntry?viewEntry.result:result;
+  const lens=isWorking?"radial-gradient(circle,#aaddff,#0066cc)":dr?.found?"radial-gradient(circle,#aaffcc,#008844)":"radial-gradient(circle,#99ccff,#003399)";
+
+  document.getElementById("app").innerHTML=`
+  <div style="min-height:100vh;background:linear-gradient(135deg,#1a0000,#2d0000 40%,#1a0505);display:flex;align-items:flex-start;justify-content:center;padding:20px 14px 40px">
+    <div style="width:100%;max-width:420px;background:linear-gradient(160deg,#cc0000,#990000 60%,#7a0000);border-radius:16px 16px 12px 12px;box-shadow:0 0 0 3px #ff3333,0 0 0 5px #880000,0 20px 60px rgba(0,0,0,0.8);overflow:hidden">
+
+      <div style="padding:22px 18px 14px;border-bottom:3px solid #880000;display:flex;align-items:center;gap:12px">
+        <div style="display:flex;flex-direction:column;gap:4px">${led(!isWorking&&!!dr?.found,"#00ff88")}${led(isWorking,"#ffaa00")}${led(!!error,"#ff2200")}</div>
+        <div style="width:52px;height:52px;border-radius:50%;flex-shrink:0;background:${lens};border:4px solid #fff;box-shadow:0 0 0 3px #888,0 0 20px rgba(100,200,255,0.5)${isWorking?";animation:blink 0.5s infinite":""}"></div>
+        <div>
+          <div style="color:#fff;font-size:13px;font-weight:700;letter-spacing:1px;text-shadow:2px 2px 0 #660000">ANIMALdex</div>
+          <div style="color:#ffaaaa;font-size:7px;margin-top:4px">ZOOLOGICAL SCANNER v4.0</div>
+        </div>
+        <div style="margin-left:auto;display:flex;gap:6px">${["#ff6666","#ffaa44","#44aaff"].map(c=>`<div style="width:13px;height:13px;border-radius:50%;background:${c};border:2px solid rgba(0,0,0,0.3)"></div>`).join("")}</div>
+      </div>
+
+      <div style="display:flex;border-bottom:2px solid #880000">
+        <button onclick="setTab('scan')" class="btn" style="flex:1;padding:10px 4px;background:${tab==="scan"?"#1a0a0a":"transparent"};color:${tab==="scan"?"#00ff88":"#ff9999"};font-size:6px;border-bottom:${tab==="scan"?"2px solid #00ff88":"none"}">🔍 SCANNER</button>
+        <button onclick="setTab('collection')" class="btn" style="flex:1;padding:10px 4px;background:${tab==="collection"?"#1a0a0a":"transparent"};color:${tab==="collection"?"#00ff88":"#ff9999"};font-size:6px;border-bottom:${tab==="collection"?"2px solid #00ff88":"none"}">📚 COLLECTION (${collection.length})</button>
+      </div>
+
+      <div style="padding:14px 16px">
+        ${tab==="scan"?`
+          <div style="background:#0d1a0d;border-radius:8px;border:3px solid #222;overflow:hidden;position:relative;min-height:240px;box-shadow:inset 0 0 30px rgba(0,0,0,0.8)">
+            <div class="scanlines"></div>
+            ${screenHTML()}
+          </div>
+          ${detailHTML()}
+          <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
+            <input id="fileInput" type="file" accept="image/*,.heic,.heif" onchange="handleFile(this)"/>
+            <input id="camInput" type="file" accept="image/*" capture="environment" onchange="handleFile(this)"/>
+            <button onclick="document.getElementById('fileInput').click()" ${isWorking?"disabled":""} class="btn" style="flex:1;background:${isWorking?"#440000":"linear-gradient(180deg,#ff4444,#cc0000)"};color:#fff;border:3px solid #880000;border-radius:8px;padding:10px 6px;font-size:7px;box-shadow:${isWorking?"none":"0 4px 0 #660000"}">📁 PHOTO</button>
+            <button onclick="document.getElementById('camInput').click()" ${isWorking?"disabled":""} class="btn" style="flex:1;background:${isWorking?"#440000":"linear-gradient(180deg,#ff4444,#cc0000)"};color:#fff;border:3px solid #880000;border-radius:8px;padding:10px 6px;font-size:7px;box-shadow:${isWorking?"none":"0 4px 0 #660000"}">📷 CAMÉRA</button>
+            <button onclick="resetScan()" class="btn" style="width:44px;height:44px;background:linear-gradient(180deg,#882200,#661100);color:#ffaaaa;border:3px solid #550000;border-radius:8px;font-size:18px;box-shadow:0 4px 0 #440000">↺</button>
+          </div>
+        `:collectionHTML()}
+      </div>
+
+      <div style="height:12px;background:repeating-linear-gradient(90deg,#880000 0,#880000 8px,#770000 8px,#770000 16px);border-top:2px solid #660000"></div>
+    </div>
+  </div>`;
+}
+
+function setTab(t){set({tab:t,viewEntry:null})}
+function resetScan(){set({image:null,result:null,error:null,viewEntry:null,scanning:false,loading:false,converting:false,progress:0})}
+function openEntry(i){set({viewEntry:S.collection[i],tab:"scan",error:null,image:null,result:null,scanning:false})}
+function clearCollection(){if(confirm("Supprimer toute la collection ?"))saveCollection([])}
+
+function handleFile(input){
+  const f=input.files[0];input.value="";
+  if(!f)return;
+  processImage(f);
+}
+
+async function processImage(file){
+  set({result:null,error:null,image:null,viewEntry:null,converting:true,scanning:false,loading:false,progress:0});
+  let jpeg;
+  try{jpeg=await convertToJpeg(file);}
+  catch(e){set({error:e.message,converting:false});return;}
+  set({converting:false,image:jpeg,scanning:true,loading:true,progress:0});
+
+  let prog=0;
+  const iv=setInterval(()=>{prog+=Math.random()*11;if(prog>=88){prog=88;clearInterval(iv);}set({progress:Math.min(prog,88)});},180);
+
+  try{
+    const base64=jpeg.split(",")[1];
+    // Appel au proxy Vercel — pas de clé API exposée
+    const res=await fetch("/api/scan",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({imageBase64:base64,mediaType:"image/jpeg"})
+    });
+    clearInterval(iv);
+    const data=await res.json();
+    if(!res.ok)throw new Error(data.error||"Erreur serveur "+res.status);
+
+    if(data.found){
+      const entry={id:Date.now(),date:new Date().toLocaleDateString("fr-FR"),image:jpeg,result:data};
+      saveCollection([entry,...S.collection]);
+    }
+    set({result:data,scanning:false,loading:false,progress:100});
+  }catch(e){
+    clearInterval(iv);
+    set({error:e.message,scanning:false,loading:false,progress:0});
+  }
+}
+
+if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
+render();
+</script>
+</body>
+</html>
