@@ -286,6 +286,10 @@ function statsHTML(){
         ${Object.keys(byCons).length===0?`<div style="color:#444;font-size:8px">—</div>`:""}
       </div>
     </div>
+    <div style="margin-top:14px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+      <button onclick="fixCollection()" class="btn" style="background:rgba(0,100,255,0.1);color:#44aaff;border:1px solid #44aaff44;border-radius:4px;padding:6px 10px;font-size:6px">🔧 CORRIGER NUMÉROS</button>
+      <button onclick="if(confirm('Supprimer toute la collection ?'))saveCollection([])" class="btn" style="background:transparent;color:#440000;border:1px solid #440000;border-radius:4px;padding:6px 10px;font-size:6px">🗑 VIDER</button>
+    </div>
   </div>`;
 }
 
@@ -477,6 +481,49 @@ async function processImage(file){
     }
     set({result:data,scanning:false,loading:false,progress:100});
   }catch(e){clearInterval(iv);set({error:e.message,scanning:false,loading:false,progress:0});}
+}
+
+function fixCollection(){
+  const VALID=["Europe","Afrique","Amérique du Nord","Amérique du Sud","Asie","Asie du Sud-Est","Océanie","Arctique","Antarctique"];
+  const col=[...S.collection];
+  const usedNums=new Set();
+  col.forEach(e=>{
+    // Fix numero
+    let num=e.result.numero;
+    const name=e.result.nomScientifique||e.result.nomCommun||"";
+    if(!num||num==="042"||num==="NNN"||usedNums.has(num)){
+      let hash=0;
+      for(let i=0;i<name.length;i++)hash=((hash<<5)-hash)+name.charCodeAt(i);
+      let n=Math.abs(hash%899)+100;
+      let tries=0;
+      while(usedNums.has(String(n))&&tries++<50)n=(n%899)+100;
+      num=String(n);
+    }
+    usedNums.add(num);
+    e.result.numero=num;
+    // Fix region
+    if(!VALID.includes(e.result.region)){
+      const r=(e.result.region||"").toLowerCase();
+      const nom=(e.result.nomCommun||"").toLowerCase();
+      if(r.includes("europe"))e.result.region="Europe";
+      else if(r.includes("afrique")||r.includes("africa"))e.result.region="Afrique";
+      else if(r.includes("sud-est")||r.includes("southeast"))e.result.region="Asie du Sud-Est";
+      else if(r.includes("nord")||r.includes("north"))e.result.region="Amérique du Nord";
+      else if(r.includes("sud")||r.includes("south"))e.result.region="Amérique du Sud";
+      else if(r.includes("asie")||r.includes("asia"))e.result.region="Asie";
+      else if(r.includes("océanie")||r.includes("australia"))e.result.region="Océanie";
+      else if(r.includes("arctique")||r.includes("arctic"))e.result.region="Arctique";
+      else if(r.includes("antarc"))e.result.region="Antarctique";
+      else if(nom.includes("ours polaire")||nom.includes("phoque"))e.result.region="Arctique";
+      else if(nom.includes("lion")||nom.includes("guépard")||nom.includes("fennec")||nom.includes("zèbre"))e.result.region="Afrique";
+      else if(nom.includes("panda"))e.result.region="Asie";
+      else if(nom.includes("capucin")||nom.includes("jaguar")||nom.includes("tapir"))e.result.region="Amérique du Sud";
+      else if(nom.includes("ours")||nom.includes("loup")||nom.includes("renard"))e.result.region="Europe";
+      else e.result.region="Afrique";
+    }
+  });
+  saveCollection(col);
+  alert("✓ "+col.length+" entrées corrigées !");
 }
 
 if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});

@@ -37,39 +37,30 @@ export default async function handler(req, res) {
         system: `Tu es un expert zoologiste intégré dans un Pokédex des animaux.
 Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans backticks, sans texte autour.
 
-RÈGLES IMPORTANTES :
-- "numero" : génère un numéro UNIQUE entre 001 et 999 basé sur la classification taxonomique de l'animal (utilise l'ordre alphabétique du nom scientifique pour le calculer de façon cohérente). Ne mets JAMAIS 042 par défaut.
-- "region" : utilise exactement l'une de ces valeurs : Europe, Afrique, Amérique du Nord, Amérique du Sud, Asie, Asie du Sud-Est, Océanie, Arctique, Antarctique, Mondial
+RÈGLE 1 — numero : Calcule un numéro entre 001 et 999 basé sur la position alphabétique du nom scientifique. INTERDIT d'utiliser 042 par défaut. Exemples: Panthera leo → 612, Aquila chrysaetos → 071, Delphinus delphis → 234.
 
-Structure JSON si animal détecté :
-{
-  "found": true,
-  "numero": "NNN",
-  "nomCommun": "nom en français",
-  "nomScientifique": "Genus species",
-  "famille": "famille taxonomique",
-  "ordre": "ordre taxonomique",
-  "classe": "Mammifère ou Oiseau ou Reptile ou Amphibien ou Poisson ou Insecte ou Arachnide ou Crustacé",
-  "habitat": "description courte de l'habitat naturel",
-  "regime": "Carnivore ou Herbivore ou Omnivore ou Insectivore",
-  "taille": "ex: 30-45 cm",
-  "poids": "ex: 2-5 kg",
-  "conservation": "LC ou NT ou VU ou EN ou CR ou EX",
-  "conservationLabel": "Préoccupation mineure ou Quasi menacé ou Vulnérable ou En danger ou En danger critique ou Éteint",
-  "description": "2-3 phrases fascinantes sur cet animal.",
-  "anecdote": "Une anecdote surprenante peu connue.",
-  "type1": "Terrestre ou Aquatique ou Aérien ou Nocturne ou Diurne ou Venimeux ou Prédateur ou Herbivore ou Social ou Solitaire",
-  "type2": "second type si pertinent, sinon null",
-  "confiance": "haute ou moyenne ou faible",
-  "region": "région d'origine principale de l'espèce"
-}
+RÈGLE 2 — region : Tu DOIS choisir EXACTEMENT une de ces 9 valeurs (copie mot pour mot) :
+- Europe
+- Afrique
+- Amérique du Nord
+- Amérique du Sud
+- Asie
+- Asie du Sud-Est
+- Océanie
+- Arctique
+- Antarctique
 
-Si aucun animal visible : {"found": false, "message": "Aucun animal détecté."}`,
+Si l'animal vit sur plusieurs continents, choisis son aire de répartition principale. N'utilise JAMAIS "Mondial", "Global", "Cosmopolite" ou toute autre valeur.
+
+Réponds avec ce JSON :
+{"found":true,"numero":"NNN","nomCommun":"nom français","nomScientifique":"Genus species","famille":"famille","ordre":"ordre","classe":"Mammifère","habitat":"description habitat","regime":"Carnivore","taille":"30-45 cm","poids":"2-5 kg","conservation":"LC","conservationLabel":"Préoccupation mineure","description":"2-3 phrases fascinantes.","anecdote":"anecdote surprenante.","type1":"Terrestre","type2":null,"confiance":"haute","region":"Afrique"}
+
+Si aucun animal visible : {"found":false,"message":"Aucun animal détecté."}`,
         messages: [{
           role: "user",
           content: [
             { type: "image", source: { type: "base64", media_type: mediaType || "image/jpeg", data: imageBase64 } },
-            { type: "text", text: "Identifie précisément l'animal sur cette photo et génère sa fiche complète." }
+            { type: "text", text: "Identifie l'animal sur cette photo. Génère un numéro unique basé sur son nom scientifique, et choisis sa région parmi les 9 valeurs autorisées." }
           ]
         }]
       })
@@ -83,6 +74,33 @@ Si aucun animal visible : {"found": false, "message": "Aucun animal détecté."}
     if (!match) return res.status(500).json({ error: "Réponse inattendue du modèle" });
 
     const result = JSON.parse(match[0]);
+
+    // Sanitize region — force to valid value if Claude hallucinated
+    const VALID_REGIONS = ["Europe","Afrique","Amérique du Nord","Amérique du Sud","Asie","Asie du Sud-Est","Océanie","Arctique","Antarctique"];
+    if (!VALID_REGIONS.includes(result.region)) {
+      // Try to map common mistakes
+      const r = (result.region || "").toLowerCase();
+      if (r.includes("europe")) result.region = "Europe";
+      else if (r.includes("afrique") || r.includes("africa")) result.region = "Afrique";
+      else if (r.includes("nord") || r.includes("north america")) result.region = "Amérique du Nord";
+      else if (r.includes("sud") || r.includes("south america")) result.region = "Amérique du Sud";
+      else if (r.includes("sud-est") || r.includes("southeast")) result.region = "Asie du Sud-Est";
+      else if (r.includes("asie") || r.includes("asia")) result.region = "Asie";
+      else if (r.includes("océanie") || r.includes("oceania") || r.includes("australia")) result.region = "Océanie";
+      else if (r.includes("arctique") || r.includes("arctic")) result.region = "Arctique";
+      else if (r.includes("antarc")) result.region = "Antarctique";
+      else result.region = "Afrique"; // fallback for truly unknown
+    }
+
+    // Sanitize numero — prevent 042 default
+    if (!result.numero || result.numero === "042" || result.numero === "NNN") {
+      // Generate from scientific name
+      const name = result.nomScientifique || "Unknown species";
+      let hash = 0;
+      for (let i = 0; i < name.length; i++) hash = ((hash << 5) - hash) + name.charCodeAt(i);
+      result.numero = String(Math.abs(hash % 899) + 100);
+    }
+
     return res.status(200).json(result);
 
   } catch (err) {
