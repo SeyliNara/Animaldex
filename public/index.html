@@ -46,7 +46,7 @@
 
 <script>
 // ── Constants ────────────────────────────────────────────────────────────────
-const COLL_KEY="animaldex_v4_collection", KEY_KEY="animaldex_v4_apikey";
+const COLL_KEY="animaldex_v4_collection";
 const TOTAL_SLOTS=151;
 const TYPE_COLORS={Terrestre:"#A0522D",Aquatique:"#4A90D9","Aérien":"#87CEEB",Nocturne:"#4B0082",Diurne:"#FFD700",Venimeux:"#9ACD32","Prédateur":"#CC2200",Herbivore:"#228B22",Social:"#FF69B4",Solitaire:"#708090"};
 const CONS_COLORS={LC:"#78C850",NT:"#A8B820",VU:"#F08030",EN:"#F08030",CR:"#C03028",EX:"#705848"};
@@ -56,7 +56,7 @@ const REGION_IDS={"Europe":[250,276,380,724,826,528,56,616,203,752,578,246,208,3
 // ── State ────────────────────────────────────────────────────────────────────
 let S={
   tab:"scan", collTab:"grid",
-  apiKey:localStorage.getItem(KEY_KEY)||"", showKey:!localStorage.getItem(KEY_KEY),
+
   image:null, result:null, error:null,
   loading:false, converting:false, scanning:false, progress:0,
   collection:JSON.parse(localStorage.getItem(COLL_KEY)||"[]"),
@@ -348,7 +348,7 @@ function closeModal(){document.getElementById("modal").style.display="none";}
 
 // ── Main render ───────────────────────────────────────────────────────────────
 function render(){
-  const{tab,collTab,apiKey,showKey,loading,converting,result,error,collection}=S;
+  const{tab,collTab,loading,converting,result,error,collection}=S;
   const isWorking=loading||converting;
   const dr=result;
   const lens=isWorking?"radial-gradient(circle,#aaddff,#0066cc)":dr?.found?"radial-gradient(circle,#aaffcc,#008844)":"radial-gradient(circle,#99ccff,#003399)";
@@ -369,12 +369,7 @@ function render(){
       </div>
 
       ${tab==="scan"?`<div style="padding:14px 16px">
-        ${showKey?`<div style="background:#1a0a0a;border:2px solid #440000;border-radius:8px;padding:12px;margin-bottom:12px">
-          <div style="color:#ff6666;font-size:7px;margin-bottom:6px">CLÉ API ANTHROPIC :</div>
-          <div style="color:#ff9944;font-size:6px;margin-bottom:8px;line-height:1.9">console.anthropic.com → API Keys</div>
-          <div style="display:flex;gap:8px"><input id="keyIn" type="password" placeholder="sk-ant-api03-..." value="${apiKey}" style="flex:1;background:#0d0505;border:1px solid #440000;color:#ff9999;padding:6px 8px;border-radius:4px;font-family:monospace;font-size:11px;outline:none"/>
-          <button onclick="saveKey()" class="btn" style="background:#cc0000;color:#fff;padding:6px 10px;border-radius:4px;font-size:7px">OK</button></div>
-        </div>`:`<div onclick="set({showKey:true})" style="background:#0a1a0a;border:1px solid #003300;border-radius:6px;padding:6px 10px;margin-bottom:10px;cursor:pointer;display:flex;justify-content:space-between"><span style="color:#006622;font-size:7px">✓ CLÉ API OK</span><span style="color:#444;font-size:7px">modifier ›</span></div>`}
+        
         <div style="background:#0d1a0d;border-radius:8px;border:3px solid #222;overflow:hidden;position:relative;min-height:240px;box-shadow:inset 0 0 30px rgba(0,0,0,0.8)"><div class="scanlines"></div>${screenHTML()}</div>
         ${detailPanelHTML()}
         <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
@@ -456,9 +451,8 @@ function initMap(){
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
-function saveKey(){const v=(document.getElementById("keyIn")||{}).value||"";if(!v.trim())return;localStorage.setItem(KEY_KEY,v.trim());set({apiKey:v.trim(),showKey:false});}
 function resetScan(){set({image:null,result:null,error:null,scanning:false,loading:false,converting:false,progress:0});}
-function handleFile(input){const f=input.files[0];input.value="";if(!f)return;if(!S.apiKey){set({error:"Entre ta clé API d'abord !"});return;}processImage(f);}
+function handleFile(input){const f=input.files[0];input.value="";if(!f)return;processImage(f);}
 
 async function processImage(file){
   set({result:null,error:null,image:null,converting:true,scanning:false,loading:false,progress:0});
