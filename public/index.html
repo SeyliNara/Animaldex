@@ -9,8 +9,10 @@
   <meta name="apple-mobile-web-app-title" content="ANIMALdex"/>
   <link rel="manifest" href="manifest.json"/>
   <link rel="apple-touch-icon" href="icon.png"/>
-  <title>ANIMALdex — Zoological Scanner</title>
+  <title>ANIMALdex</title>
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/topojson/3.0.2/topojson.min.js"></script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     html,body{height:100%;background:#1a0000;font-family:'Press Start 2P',monospace;overflow-x:hidden}
@@ -30,33 +32,46 @@
     ::-webkit-scrollbar{width:4px}
     ::-webkit-scrollbar-track{background:#1a0a0a}
     ::-webkit-scrollbar-thumb{background:#cc0000;border-radius:2px}
-    .card:hover{background:rgba(0,255,100,0.09)!important}
+    .card-hover:hover{background:rgba(0,255,100,0.09)!important}
     .btn{font-family:'Press Start 2P',monospace;cursor:pointer;border:none;transition:all 0.1s}
     .btn:active{transform:translateY(2px)}
+    .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:100;display:flex;align-items:center;justify-content:center;padding:16px}
+    select{background:#0d0505;color:#ff9999;border:1px solid #440000;border-radius:4px;padding:4px 6px;font-size:7px;font-family:'Press Start 2P',monospace;cursor:pointer}
+    .grid-cell{aspect-ratio:1;border-radius:6px;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:4px;transition:all 0.2s;position:relative;overflow:hidden;min-height:64px}
   </style>
 </head>
 <body>
 <div id="app"></div>
+<div id="modal" style="display:none" class="modal-bg" onclick="closeModal()"></div>
+
 <script>
+// ── Constants ────────────────────────────────────────────────────────────────
+const COLL_KEY="animaldex_v4_collection", KEY_KEY="animaldex_v4_apikey";
+const TOTAL_SLOTS=151;
 const TYPE_COLORS={Terrestre:"#A0522D",Aquatique:"#4A90D9","Aérien":"#87CEEB",Nocturne:"#4B0082",Diurne:"#FFD700",Venimeux:"#9ACD32","Prédateur":"#CC2200",Herbivore:"#228B22",Social:"#FF69B4",Solitaire:"#708090"};
 const CONS_COLORS={LC:"#78C850",NT:"#A8B820",VU:"#F08030",EN:"#F08030",CR:"#C03028",EX:"#705848"};
-const COLL_KEY="animaldex_v4_collection";
+const CLASS_EMOJI={"Mammifère":"🦁","Oiseau":"🦅","Reptile":"🦎","Amphibien":"🐸","Poisson":"🐟","Insecte":"🦋","Arachnide":"🕷️","Crustacé":"🦀"};
+const REGION_IDS={"Europe":[250,276,380,724,826,528,56,616,203,752,578,246,208,372,620,40,756,442,703,705,191,348,100,642,804,498,112,428,440,233,688,807,70,8],"Afrique":[12,24,204,72,854,108,120,140,144,148,174,178,180,266,288,324,332,384,404,426,430,434,450,454,466,478,480,504,508,516,562,566,598,624,630,646,678,686,694,706,710,716,724,728,729,748,768,788,800,818,834,854,894],"Amérique du Nord":[124,484,840,192,214,332,388,558,320,222,188,591,170,862,604,218,68,32,858],"Amérique du Sud":[32,68,76,152,170,218,328,600,604,858,862],"Asie":[4,50,64,156,356,364,392,398,408,410,417,422,462,496,524,586,643,760,762,764,792,795,860],"Asie du Sud-Est":[96,116,360,418,458,104,608,702,764,704],"Océanie":[36,554,598,242,540,548,90,776,798],"Arctique":[304,352],"Antarctique":[10]};
 
+// ── State ────────────────────────────────────────────────────────────────────
 let S={
-  tab:"scan",
-  image:null,result:null,error:null,
-  loading:false,converting:false,scanning:false,progress:0,
+  tab:"scan", collTab:"grid",
+  apiKey:localStorage.getItem(KEY_KEY)||"", showKey:!localStorage.getItem(KEY_KEY),
+  image:null, result:null, error:null,
+  loading:false, converting:false, scanning:false, progress:0,
   collection:JSON.parse(localStorage.getItem(COLL_KEY)||"[]"),
-  viewEntry:null
+  filterClass:"all", filterCons:"all", sortBy:"numero",
+  hoveredRegion:null, mapLoaded:false, mapData:null,
 };
 function set(p){S={...S,...p};render()}
 
 function saveCollection(col){
-  const c=col.slice(0,100);
+  const c=col.slice(0,200);
   localStorage.setItem(COLL_KEY,JSON.stringify(c));
   set({collection:c});
 }
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
 const convertToJpeg=(file)=>new Promise((resolve,reject)=>{
   const r=new FileReader();
   r.onerror=()=>reject(new Error("Lecture échouée"));
@@ -80,16 +95,34 @@ const badge=(t)=>{if(!t)return"";const c=TYPE_COLORS[t]||"#888";return`<span sty
 const statBar=(l,v,c)=>`<div style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="font-size:8px;color:#ccc">${l}</span><span style="font-size:8px;color:#fff">${v}</span></div><div style="background:#1a0a0a;height:10px;border-radius:2px;border:1px solid #333;overflow:hidden"><div style="width:${v}%;height:100%;background:linear-gradient(90deg,${c},${c}aa);box-shadow:0 0 6px ${c}88;transition:width 1s"></div></div></div>`;
 const infoBox=(l,bg,bc,lc,tc,v)=>`<div style="margin-top:8px;padding:8px 10px;background:${bg};border:1px solid ${bc};border-radius:4px"><div style="color:${lc};font-size:7px;margin-bottom:4px">${l}</div><div style="color:${tc};line-height:1.8;font-family:'VT323',monospace;font-size:13px">${v||""}</div></div>`;
 
+function getMapColor(region){
+  const count=S.collection.filter(e=>(e.result.region||"Mondial")===region).length;
+  const max=Math.max(1,...["Europe","Afrique","Amérique du Nord","Amérique du Sud","Asie","Asie du Sud-Est","Océanie","Arctique","Antarctique"].map(r=>S.collection.filter(e=>(e.result.region||"Mondial")===r).length));
+  if(count===0)return"#1a2a1a";
+  const t=count/max;
+  if(t<0.2)return"#1a4a0a";
+  if(t<0.4)return"#2a6a10";
+  if(t<0.6)return"#cc6600";
+  if(t<0.8)return"#ee4400";
+  return"#ff1100";
+}
+
+// ── Screen content ────────────────────────────────────────────────────────────
 function screenHTML(){
-  const{converting,scanning,progress,error,result,viewEntry,loading}=S;
-  const dr=viewEntry?viewEntry.result:result;
-  const di=viewEntry?viewEntry.image:S.image;
+  const{image,converting,scanning,progress,error,result,loading}=S;
+  const dr=result;
 
-  if(converting)return`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:240px;gap:14px"><div class="spin" style="font-size:28px">⚙️</div><div class="pulse" style="color:#ffaa44;font-size:8px">CONVERSION...</div></div>`;
+  if(converting)return`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:240px;gap:14px"><div class="spin" style="font-size:28px">⚙️</div><div class="pulse" style="color:#ffaa44;font-size:8px">CONVERSION HEIC...</div></div>`;
 
-  if(di&&!converting){
-    const overlay=scanning?`<div class="scan-line" style="position:absolute;left:0;right:0;height:4px;background:linear-gradient(90deg,transparent,#00ff88,transparent);box-shadow:0 0 12px #00ff88;z-index:5"></div><div style="position:absolute;inset:0;z-index:4;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,20,0,0.5);gap:12px"><div class="pulse" style="color:#00ff88;font-size:9px;letter-spacing:2px">ANALYSE...</div><div style="width:160px;height:8px;background:#001a00;border:1px solid #004400;border-radius:4px;overflow:hidden"><div style="width:${progress}%;height:100%;background:linear-gradient(90deg,#00aa44,#00ff88);transition:width 0.2s"></div></div><div style="color:#006622;font-size:8px">${Math.round(progress)}%</div></div>`:"";
-    if(scanning||(!dr&&!error))return`<div style="position:relative;height:240px"><img src="${di}" style="width:100%;height:240px;object-fit:cover;display:block;filter:${scanning?"brightness(0.35) saturate(0.2) hue-rotate(100deg)":"none"}"/>${overlay}</div>`;
+  if(image&&!converting){
+    const overlay=scanning?`
+      <div class="scan-line" style="position:absolute;left:0;right:0;height:4px;background:linear-gradient(90deg,transparent,#00ff88,transparent);box-shadow:0 0 12px #00ff88;z-index:5"></div>
+      <div style="position:absolute;inset:0;z-index:4;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,20,0,0.5);gap:12px">
+        <div class="pulse" style="color:#00ff88;font-size:9px;letter-spacing:2px">ANALYSE...</div>
+        <div style="width:160px;height:8px;background:#001a00;border:1px solid #004400;border-radius:4px;overflow:hidden"><div style="width:${progress}%;height:100%;background:linear-gradient(90deg,#00aa44,#00ff88);transition:width 0.2s"></div></div>
+        <div style="color:#006622;font-size:8px">${Math.round(progress)}%</div>
+      </div>`:"";
+    if(scanning||(!dr&&!error))return`<div style="position:relative;height:240px"><img src="${image}" style="width:100%;height:240px;object-fit:cover;display:block;filter:${scanning?"brightness(0.35) saturate(0.2) hue-rotate(100deg)":"none"}"/>${overlay}</div>`;
   }
 
   if(error&&!loading)return`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:240px;padding:20px;gap:10px"><div style="font-size:28px">⚠️</div><div style="color:#ff4444;font-size:8px;text-align:center">ERREUR SCANNER</div><div style="color:#ff7766;font-size:7px;text-align:center;line-height:1.8;font-family:monospace;word-break:break-word">${error}</div></div>`;
@@ -98,6 +131,7 @@ function screenHTML(){
 
   if(dr&&dr.found){
     const cc=CONS_COLORS[dr.conservation]||"#666";
+    const cv={LC:95,NT:75,VU:50,EN:30,CR:15,EX:5};
     return`<div class="fade-up" style="padding:14px">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px">
         <div>
@@ -111,139 +145,343 @@ function screenHTML(){
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
         ${[["CLASSE",dr.classe],["RÉGIME",dr.regime],["TAILLE",dr.taille],["POIDS",dr.poids]].map(([l,v])=>`<div style="background:rgba(0,255,100,0.05);border:1px solid #004422;border-radius:4px;padding:5px 7px"><div style="color:#006622;font-size:7px;margin-bottom:2px">${l}</div><div style="color:#aaffcc;font-size:7px">${v||"—"}</div></div>`).join("")}
       </div>
+      <div style="margin-top:10px;padding:6px 10px;background:rgba(0,255,100,0.08);border:1px solid #00ff8844;border-radius:4px;text-align:center">
+        <span style="color:#00ff88;font-size:7px">✓ AJOUTÉ À TON POKÉDEX</span>
+      </div>
     </div>`;
   }
 
-  return`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:240px;gap:14px"><div class="pulse" style="font-size:40px;filter:drop-shadow(0 0 8px #00ff88)">🦎</div><div style="color:#00cc44;font-size:9px;text-align:center;line-height:2">PRÊT À SCANNER</div><div style="color:#004411;font-size:7px;text-align:center">JPEG · PNG · HEIC · HEIF</div></div>`;
+  return`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:240px;gap:14px">
+    <div class="pulse" style="font-size:40px;filter:drop-shadow(0 0 8px #00ff88)">🦎</div>
+    <div style="color:#00cc44;font-size:9px;text-align:center;line-height:2">PRÊT À SCANNER</div>
+    <div style="color:#004411;font-size:7px;text-align:center">JPEG · PNG · HEIC · HEIF</div>
+  </div>`;
 }
 
-function detailHTML(){
-  const dr=S.viewEntry?S.viewEntry.result:S.result;
+function detailPanelHTML(){
+  const dr=S.result;
   if(!dr||!dr.found)return"";
   const cv={LC:95,NT:75,VU:50,EN:30,CR:15,EX:5};
-  const stats={"DÉCOUVERTE":parseInt(dr.numero)||42,"VITALITÉ":cv[dr.conservation]||50,"RARETÉ":100-(cv[dr.conservation]||50),"CONFIANCE":dr.confiance==="haute"?90:dr.confiance==="moyenne"?60:35};
   return`<div class="fade-up" style="margin-top:10px;background:#0d1a0d;border:2px solid #222;border-radius:8px;padding:14px;position:relative">
     <div class="scanlines"></div>
-    ${Object.entries(stats).map(([k,v])=>statBar(k,v,k==="RARETÉ"?"#ff6644":k==="CONFIANCE"?"#44aaff":"#00cc55")).join("")}
+    ${statBar("VITALITÉ",cv[dr.conservation]||50,"#00cc55")}
+    ${statBar("RARETÉ",100-(cv[dr.conservation]||50),"#ff6644")}
+    ${statBar("CONFIANCE",dr.confiance==="haute"?90:dr.confiance==="moyenne"?60:35,"#44aaff")}
     ${infoBox("HABITAT","rgba(0,100,50,0.1)","#003322","#006622","#88ccaa",dr.habitat)}
     ${infoBox("DONNÉES","rgba(0,50,100,0.1)","#001133","#004488","#88aacc",dr.description)}
     ${infoBox("⚡ FAIT RARE","rgba(100,80,0,0.1)","#332200","#664400","#ccaa66",dr.anecdote)}
     <div style="margin-top:8px;text-align:center;font-size:8px;color:${CONS_COLORS[dr.conservation]||"#888"}">${dr.conservationLabel||""}</div>
-    ${S.viewEntry?`<div style="margin-top:6px;text-align:center;font-size:7px;color:#555">Scanné le ${S.viewEntry.date}</div>`:""}
   </div>`;
 }
 
-function collectionHTML(){
+// ── Collection Grid ───────────────────────────────────────────────────────────
+function collectionGridHTML(){
+  const{collection,filterClass,filterCons,sortBy}=S;
+  const classes=[...new Set(collection.map(e=>e.result.classe).filter(Boolean))];
+  const consStatuses=[...new Set(collection.map(e=>e.result.conservation).filter(Boolean))];
+
+  const filtered=collection
+    .filter(e=>filterClass==="all"||e.result.classe===filterClass)
+    .filter(e=>filterCons==="all"||e.result.conservation===filterCons)
+    .sort((a,b)=>{
+      if(sortBy==="numero")return parseInt(a.result.numero)-parseInt(b.result.numero);
+      if(sortBy==="date")return b.id-a.id;
+      if(sortBy==="alpha")return(a.result.nomCommun||"").localeCompare(b.result.nomCommun||"");
+      if(sortBy==="rarity"){const cv={LC:1,NT:2,VU:3,EN:4,CR:5,EX:6};return(cv[b.result.conservation]||0)-(cv[a.result.conservation]||0);}
+      return 0;
+    });
+
+  const byNumero={};
+  collection.forEach(e=>{byNumero[parseInt(e.result.numero)]=e;});
+  const pct=Math.round((collection.length/TOTAL_SLOTS)*100);
+
+  if(collection.length===0)return`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:260px;gap:14px"><div class="pulse" style="font-size:36px">📭</div><div style="color:#006622;font-size:8px;text-align:center;line-height:2">POKÉDEX VIDE<br/><span style="color:#004411;font-size:7px">SCANNE TON PREMIER ANIMAL</span></div></div>`;
+
+  return`
+    <div style="margin-bottom:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <select onchange="set({filterClass:this.value})">
+        <option value="all"${filterClass==="all"?" selected":""}>TOUTES CLASSES</option>
+        ${classes.map(c=>`<option value="${c}"${filterClass===c?" selected":""}>${c.toUpperCase()}</option>`).join("")}
+      </select>
+      <select onchange="set({filterCons:this.value})">
+        <option value="all"${filterCons==="all"?" selected":""}>TOUS STATUTS</option>
+        ${consStatuses.map(c=>`<option value="${c}"${filterCons===c?" selected":""}>${c}</option>`).join("")}
+      </select>
+    </div>
+    <div style="margin-bottom:10px;display:flex;gap:4px;flex-wrap:wrap;align-items:center">
+      <span style="color:#555;font-size:6px;margin-right:2px">TRI:</span>
+      ${[["numero","#"],["date","DATE"],["alpha","A-Z"],["rarity","RARETÉ"]].map(([v,l])=>`<button onclick="set({sortBy:'${v}'})" class="btn" style="background:${sortBy===v?"#cc0000":"transparent"};color:${sortBy===v?"#fff":"#886666"};border:1px solid ${sortBy===v?"#cc0000":"#440000"};border-radius:3px;padding:3px 7px;font-size:6px">${l}</button>`).join("")}
+    </div>
+    <div style="margin-bottom:10px;padding:6px 10px;background:rgba(0,255,100,0.05);border:1px solid #004422;border-radius:6px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+        <span style="color:#00ff88;font-size:7px">COMPLÉTION</span>
+        <span style="color:#fff;font-size:7px">${collection.length}/${TOTAL_SLOTS}</span>
+      </div>
+      <div style="background:#1a0a0a;height:8px;border-radius:2px;border:1px solid #333;overflow:hidden">
+        <div style="width:${pct}%;height:100%;background:linear-gradient(90deg,#00aa44,#00ff88);box-shadow:0 0 6px #00ff8866;transition:width 1s"></div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px;max-height:460px;overflow-y:auto">
+      ${Array.from({length:TOTAL_SLOTS},(_,i)=>{
+        const num=i+1;
+        const entry=filterClass==="all"&&filterCons==="all"?byNumero[num]:filtered.find(e=>parseInt(e.result.numero)===num);
+        const discovered=!!entry;
+        const r=entry?.result;
+        const isSelected=false;
+        return`<div class="grid-cell" onclick="${discovered?`openModal(${JSON.stringify(JSON.stringify(entry)).slice(1,-1)})`:"return"}" style="background:${discovered?"rgba(0,255,100,0.06)":"rgba(0,0,0,0.4)"};border:1px solid ${discovered?"#004422":"#1a1a1a"};cursor:${discovered?"pointer":"default"}">
+          ${discovered
+            ?(entry.image?`<img src="${entry.image}" style="width:100%;height:44px;object-fit:cover;border-radius:3px;margin-bottom:2px"/>`:`<div style="font-size:22px;margin-bottom:2px">${CLASS_EMOJI[r?.classe]||"🦎"}</div>`)
+            :`<div style="color:#1a1a1a;font-size:18px;margin-bottom:2px">?</div>`}
+          <div style="color:${discovered?"#00ff88":"#222"};font-size:7px;font-family:'Press Start 2P',monospace">#${String(num).padStart(3,"0")}</div>
+          ${discovered?`<div style="color:#aaffcc;font-size:6px;font-family:'Press Start 2P',monospace;text-align:center;overflow:hidden;max-width:100%;text-overflow:ellipsis;white-space:nowrap">${(r?.nomCommun||"").toUpperCase().slice(0,6)}</div>`:""}
+          ${discovered?`<div style="position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;background:${CONS_COLORS[r?.conservation]||"#666"}"></div>`:""}
+        </div>`;
+      }).join("")}
+    </div>
+    ${(filterClass!=="all"||filterCons!=="all")?`<div style="margin-top:10px;padding:6px 10px;background:rgba(255,100,0,0.05);border:1px solid #442200;border-radius:6px">
+      <div style="color:#ffaa44;font-size:7px;margin-bottom:6px">${filtered.length} RÉSULTAT(S)</div>
+      <div style="display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto">
+        ${filtered.map(e=>`<div onclick="openModal(${JSON.stringify(JSON.stringify(e)).slice(1,-1)})" style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:rgba(0,255,100,0.04);border:1px solid #004422;border-radius:4px;cursor:pointer"><span style="color:#00ff88;font-size:7px">#${e.result.numero}</span><span style="color:#fff;font-size:7px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(e.result.nomCommun||"").toUpperCase()}</span><span style="background:${CONS_COLORS[e.result.conservation]||"#666"};color:#fff;font-size:6px;font-family:'Press Start 2P',monospace;padding:2px 4px;border-radius:2px">${e.result.conservation}</span></div>`).join("")}
+      </div>
+    </div>`:""}`;
+}
+
+// ── Stats Panel ───────────────────────────────────────────────────────────────
+function statsHTML(){
   const{collection}=S;
-  if(collection.length===0)return`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:260px;gap:14px"><div class="pulse" style="font-size:36px">📭</div><div style="color:#006622;font-size:8px;text-align:center;line-height:2">COLLECTION VIDE<br/><span style="color:#004411;font-size:7px">SCANNE TON PREMIER ANIMAL</span></div></div>`;
-  return`<div style="display:flex;flex-direction:column;gap:8px;max-height:500px;overflow-y:auto;padding-right:2px">
-    ${collection.map((e,i)=>`<div class="card" onclick="openEntry(${i})" style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(0,255,100,0.04);border:1px solid #004422;border-radius:6px;cursor:pointer;transition:background 0.2s">
-      <img src="${e.image}" style="width:44px;height:44px;object-fit:cover;border-radius:4px;border:1px solid #003322;flex-shrink:0"/>
-      <div style="flex:1;min-width:0">
-        <div style="color:#00ff88;font-size:7px">#${e.result.numero}</div>
-        <div style="color:#fff;font-size:7px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(e.result.nomCommun||"").toUpperCase()}</div>
-        <div style="color:#888;font-size:11px;font-family:'VT323',monospace;margin-top:1px">${e.result.nomScientifique||""}</div>
+  const total=collection.length;
+  const pct=Math.round((total/TOTAL_SLOTS)*100);
+  const byClass={},byCons={};
+  collection.forEach(e=>{
+    const cl=e.result.classe||"Autre";byClass[cl]=(byClass[cl]||0)+1;
+    const cs=e.result.conservation||"?";byCons[cs]=(byCons[cs]||0)+1;
+  });
+  const topClass=Object.entries(byClass).sort((a,b)=>b[1]-a[1]).slice(0,3);
+  const threatened=(byCons.VU||0)+(byCons.EN||0)+(byCons.CR||0);
+
+  return`<div style="padding:14px">
+    <div style="margin-bottom:14px;padding:10px 12px;background:rgba(0,255,100,0.05);border:1px solid #004422;border-radius:8px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+        <span style="color:#00ff88;font-size:9px">COMPLÉTION</span>
+        <span style="color:#fff;font-size:9px">${total}/${TOTAL_SLOTS}</span>
       </div>
-      <div style="text-align:center;flex-shrink:0">
-        <div style="background:${CONS_COLORS[e.result.conservation]||"#666"};color:#fff;font-size:6px;font-family:'Press Start 2P',monospace;padding:2px 5px;border-radius:3px;margin-bottom:4px">${e.result.conservation||""}</div>
-        <div style="color:#555;font-size:9px;font-family:'VT323',monospace">${e.date||""}</div>
-      </div>
-    </div>`).join("")}
-  </div>
-  <div style="margin-top:12px;text-align:center">
-    <button onclick="clearCollection()" class="btn" style="background:transparent;color:#440000;border:1px solid #440000;border-radius:4px;padding:6px 12px;font-size:6px">🗑 VIDER LA COLLECTION</button>
-  </div>`;
-}
-
-function render(){
-  const{tab,loading,converting,result,error,collection,viewEntry}=S;
-  const isWorking=loading||converting;
-  const dr=viewEntry?viewEntry.result:result;
-  const lens=isWorking?"radial-gradient(circle,#aaddff,#0066cc)":dr?.found?"radial-gradient(circle,#aaffcc,#008844)":"radial-gradient(circle,#99ccff,#003399)";
-
-  document.getElementById("app").innerHTML=`
-  <div style="min-height:100vh;background:linear-gradient(135deg,#1a0000,#2d0000 40%,#1a0505);display:flex;align-items:flex-start;justify-content:center;padding:20px 14px 40px">
-    <div style="width:100%;max-width:420px;background:linear-gradient(160deg,#cc0000,#990000 60%,#7a0000);border-radius:16px 16px 12px 12px;box-shadow:0 0 0 3px #ff3333,0 0 0 5px #880000,0 20px 60px rgba(0,0,0,0.8);overflow:hidden">
-
-      <div style="padding:22px 18px 14px;border-bottom:3px solid #880000;display:flex;align-items:center;gap:12px">
-        <div style="display:flex;flex-direction:column;gap:4px">${led(!isWorking&&!!dr?.found,"#00ff88")}${led(isWorking,"#ffaa00")}${led(!!error,"#ff2200")}</div>
-        <div style="width:52px;height:52px;border-radius:50%;flex-shrink:0;background:${lens};border:4px solid #fff;box-shadow:0 0 0 3px #888,0 0 20px rgba(100,200,255,0.5)${isWorking?";animation:blink 0.5s infinite":""}"></div>
-        <div>
-          <div style="color:#fff;font-size:13px;font-weight:700;letter-spacing:1px;text-shadow:2px 2px 0 #660000">ANIMALdex</div>
-          <div style="color:#ffaaaa;font-size:7px;margin-top:4px">ZOOLOGICAL SCANNER v4.0</div>
+      <div style="background:#1a0a0a;height:14px;border-radius:3px;border:1px solid #333;overflow:hidden;margin-bottom:4px">
+        <div style="width:${pct}%;height:100%;background:linear-gradient(90deg,#00aa44,#00ff88);box-shadow:0 0 8px #00ff8888;transition:width 1.5s;display:flex;align-items:center;justify-content:flex-end">
+          ${pct>10?`<span style="color:#000;font-size:8px;font-weight:bold;font-family:'Press Start 2P',monospace;padding-right:4px">${pct}%</span>`:""}
         </div>
-        <div style="margin-left:auto;display:flex;gap:6px">${["#ff6666","#ffaa44","#44aaff"].map(c=>`<div style="width:13px;height:13px;border-radius:50%;background:${c};border:2px solid rgba(0,0,0,0.3)"></div>`).join("")}</div>
       </div>
-
-      <div style="display:flex;border-bottom:2px solid #880000">
-        <button onclick="setTab('scan')" class="btn" style="flex:1;padding:10px 4px;background:${tab==="scan"?"#1a0a0a":"transparent"};color:${tab==="scan"?"#00ff88":"#ff9999"};font-size:6px;border-bottom:${tab==="scan"?"2px solid #00ff88":"none"}">🔍 SCANNER</button>
-        <button onclick="setTab('collection')" class="btn" style="flex:1;padding:10px 4px;background:${tab==="collection"?"#1a0a0a":"transparent"};color:${tab==="collection"?"#00ff88":"#ff9999"};font-size:6px;border-bottom:${tab==="collection"?"2px solid #00ff88":"none"}">📚 COLLECTION (${collection.length})</button>
+      <div style="color:#006622;font-size:7px">${TOTAL_SLOTS-total} espèces manquantes</div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
+      ${[{l:"ESPÈCES",v:total,c:"#00ff88"},{l:"MENACÉES",v:threatened,c:"#ff6644"},{l:"CLASSES",v:Object.keys(byClass).length,c:"#44aaff"},{l:"STREAK",v:"🔥 "+total,c:"#ffaa44"}].map(({l,v,c})=>`<div style="background:#0d1a0d;border:1px solid ${c}33;border-radius:6px;padding:8px 10px;text-align:center"><div style="color:${c};font-size:14px;margin-bottom:3px">${v}</div><div style="color:#555;font-size:6px">${l}</div></div>`).join("")}
+    </div>
+    <div style="margin-bottom:14px">
+      <div style="color:#ffcc88;font-size:8px;margin-bottom:8px">TOP CLASSES</div>
+      ${topClass.length===0?`<div style="color:#444;font-size:8px;text-align:center;padding:10px">Aucune espèce scannée</div>`:topClass.map(([cl,count])=>`<div style="margin-bottom:6px"><div style="display:flex;justify-content:space-between;margin-bottom:2px"><span style="color:#aaa;font-size:8px">${CLASS_EMOJI[cl]||"🦎"} ${cl}</span><span style="color:#fff;font-size:8px">${count}</span></div><div style="background:#1a0a0a;height:6px;border-radius:2px;border:1px solid #333;overflow:hidden"><div style="width:${(count/total)*100}%;height:100%;background:linear-gradient(90deg,#44aaff,#44aaffaa)"></div></div></div>`).join("")}
+    </div>
+    <div>
+      <div style="color:#ffcc88;font-size:8px;margin-bottom:8px">CONSERVATION</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        ${Object.entries(byCons).map(([k,v])=>`<div style="background:${CONS_COLORS[k]||"#666"}33;border:1px solid ${CONS_COLORS[k]||"#666"};border-radius:4px;padding:4px 8px;display:flex;gap:6px;align-items:center"><span style="color:${CONS_COLORS[k]||"#888"};font-size:9px">${k}</span><span style="color:#fff;font-size:9px">${v}</span></div>`).join("")}
+        ${Object.keys(byCons).length===0?`<div style="color:#444;font-size:8px">—</div>`:""}
       </div>
-
-      <div style="padding:14px 16px">
-        ${tab==="scan"?`
-          <div style="background:#0d1a0d;border-radius:8px;border:3px solid #222;overflow:hidden;position:relative;min-height:240px;box-shadow:inset 0 0 30px rgba(0,0,0,0.8)">
-            <div class="scanlines"></div>
-            ${screenHTML()}
-          </div>
-          ${detailHTML()}
-          <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
-            <input id="fileInput" type="file" accept="image/*,.heic,.heif" onchange="handleFile(this)"/>
-            <input id="camInput" type="file" accept="image/*" capture="environment" onchange="handleFile(this)"/>
-            <button onclick="document.getElementById('fileInput').click()" ${isWorking?"disabled":""} class="btn" style="flex:1;background:${isWorking?"#440000":"linear-gradient(180deg,#ff4444,#cc0000)"};color:#fff;border:3px solid #880000;border-radius:8px;padding:10px 6px;font-size:7px;box-shadow:${isWorking?"none":"0 4px 0 #660000"}">📁 PHOTO</button>
-            <button onclick="document.getElementById('camInput').click()" ${isWorking?"disabled":""} class="btn" style="flex:1;background:${isWorking?"#440000":"linear-gradient(180deg,#ff4444,#cc0000)"};color:#fff;border:3px solid #880000;border-radius:8px;padding:10px 6px;font-size:7px;box-shadow:${isWorking?"none":"0 4px 0 #660000"}">📷 CAMÉRA</button>
-            <button onclick="resetScan()" class="btn" style="width:44px;height:44px;background:linear-gradient(180deg,#882200,#661100);color:#ffaaaa;border:3px solid #550000;border-radius:8px;font-size:18px;box-shadow:0 4px 0 #440000">↺</button>
-          </div>
-        `:collectionHTML()}
-      </div>
-
-      <div style="height:12px;background:repeating-linear-gradient(90deg,#880000 0,#880000 8px,#770000 8px,#770000 16px);border-top:2px solid #660000"></div>
     </div>
   </div>`;
 }
 
-function setTab(t){set({tab:t,viewEntry:null})}
-function resetScan(){set({image:null,result:null,error:null,viewEntry:null,scanning:false,loading:false,converting:false,progress:0})}
-function openEntry(i){set({viewEntry:S.collection[i],tab:"scan",error:null,image:null,result:null,scanning:false})}
-function clearCollection(){if(confirm("Supprimer toute la collection ?"))saveCollection([])}
+// ── Map Tab ───────────────────────────────────────────────────────────────────
+function mapHTML(){
+  const{collection,hoveredRegion}=S;
+  const regionCounts={};
+  collection.forEach(e=>{const r=e.result.region||"Mondial";regionCounts[r]=(regionCounts[r]||0)+1;});
+  const maxCount=Math.max(1,...Object.values(regionCounts));
+  const regionAnimals=hoveredRegion?collection.filter(e=>(e.result.region||"Mondial")===hoveredRegion):[];
 
-function handleFile(input){
-  const f=input.files[0];input.value="";
-  if(!f)return;
-  processImage(f);
+  return`<div style="padding:12px 14px">
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px">
+      ${[{l:"RÉGIONS",v:Object.keys(regionCounts).length,c:"#44aaff"},{l:"ESPÈCES",v:collection.length,c:"#00ff88"},{l:"MENACÉES",v:collection.filter(e=>["VU","EN","CR"].includes(e.result.conservation)).length,c:"#ff6644"}].map(({l,v,c})=>`<div style="background:#0d1a0d;border:1px solid ${c}33;border-radius:6px;padding:6px 8px;text-align:center"><div style="color:${c};font-size:13px">${v}</div><div style="color:#555;font-size:5px;margin-top:2px">${l}</div></div>`).join("")}
+    </div>
+    <div style="position:relative;background:#0a1628;border-radius:8px;border:2px solid #1a3a6a;overflow:hidden">
+      <svg id="worldmap" style="width:100%;display:block"></svg>
+      <div id="map-tooltip" style="display:none;position:absolute;background:rgba(0,0,0,0.9);border:1px solid #00ff8866;border-radius:4px;padding:5px 8px;pointer-events:none;z-index:20"></div>
+      <div style="position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,0.8);border-radius:4px;padding:4px 6px">
+        <div style="color:#888;font-size:5px;margin-bottom:3px">DENSITÉ</div>
+        <div style="display:flex;gap:2px">${["#1a4a0a","#2a6a10","#cc6600","#ee4400","#ff1100"].map(c=>`<div style="width:12px;height:8px;background:${c};border-radius:1px"></div>`).join("")}</div>
+        <div style="display:flex;justify-content:space-between;margin-top:1px"><span style="color:#555;font-size:5px">PEU</span><span style="color:#555;font-size:5px">BEAUCOUP</span></div>
+      </div>
+    </div>
+    <div style="color:#444;font-size:6px;text-align:center;margin-top:6px">SURVOLE UN PAYS POUR VOIR LES ESPÈCES</div>
+    ${hoveredRegion&&regionAnimals.length>0?`<div style="margin-top:10px;padding:8px 10px;background:rgba(0,255,100,0.04);border:1px solid #004422;border-radius:6px">
+      <div style="color:#00ff88;font-size:7px;margin-bottom:6px">${hoveredRegion.toUpperCase()} — ${regionAnimals.length} ESPÈCE${regionAnimals.length>1?"S":""}</div>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        ${regionAnimals.slice(0,5).map(e=>`<div style="display:flex;align-items:center;gap:8px"><span style="color:#00ff88;font-size:6px">#${e.result.numero}</span><span style="color:#fff;font-size:6px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(e.result.nomCommun||"").toUpperCase()}</span><span style="background:${CONS_COLORS[e.result.conservation]||"#666"};color:#fff;font-size:5px;padding:1px 4px;border-radius:2px">${e.result.conservation}</span></div>`).join("")}
+        ${regionAnimals.length>5?`<div style="color:#555;font-size:6px">+${regionAnimals.length-5} autres...</div>`:""}
+      </div>
+    </div>`:""}
+    ${Object.keys(regionCounts).length>0?`<div style="margin-top:10px"><div style="color:#ffcc88;font-size:7px;margin-bottom:8px">PAR RÉGION</div>${Object.entries(regionCounts).sort((a,b)=>b[1]-a[1]).map(([region,count])=>`<div style="margin-bottom:6px"><div style="display:flex;justify-content:space-between;margin-bottom:2px"><span style="color:#aaa;font-size:7px">${region}</span><span style="color:#fff;font-size:7px">${count}</span></div><div style="background:#1a0a0a;height:6px;border-radius:2px;border:1px solid #333;overflow:hidden"><div style="width:${(count/maxCount)*100}%;height:100%;background:${getMapColor(region)}"></div></div></div>`).join("")}</div>`:""}
+    ${collection.length===0?`<div style="margin-top:10px;text-align:center;color:#444;font-size:7px;line-height:2">SCANNE DES ANIMAUX POUR<br/>VOIR LA CARTE S'ALLUMER</div>`:""}
+  </div>`;
 }
 
-async function processImage(file){
-  set({result:null,error:null,image:null,viewEntry:null,converting:true,scanning:false,loading:false,progress:0});
-  let jpeg;
-  try{jpeg=await convertToJpeg(file);}
-  catch(e){set({error:e.message,converting:false});return;}
-  set({converting:false,image:jpeg,scanning:true,loading:true,progress:0});
+// ── Modal ─────────────────────────────────────────────────────────────────────
+function openModal(entryStr){
+  const entry=JSON.parse(entryStr);
+  const r=entry.result;
+  const cv={LC:95,NT:75,VU:50,EN:30,CR:15,EX:5};
+  const cc=CONS_COLORS[r.conservation]||"#666";
+  document.getElementById("modal").style.display="flex";
+  document.getElementById("modal").innerHTML=`
+  <div onclick="event.stopPropagation()" style="width:100%;max-width:400px;max-height:90vh;overflow-y:auto;background:linear-gradient(160deg,#cc0000,#990000 60%,#7a0000);border-radius:16px;box-shadow:0 0 0 3px #ff3333,0 0 0 5px #880000,0 20px 60px rgba(0,0,0,0.9)">
+    ${entry.image?`<div style="position:relative;height:180px;overflow:hidden;border-radius:16px 16px 0 0"><img src="${entry.image}" style="width:100%;height:100%;object-fit:cover;filter:brightness(0.7)"/><div style="position:absolute;inset:0;background:linear-gradient(to top,#990000,transparent)"></div><div style="position:absolute;bottom:12px;left:14px"><div style="color:#00ff88;font-size:16px;text-shadow:0 0 10px #00ff88">#${r.numero}</div><div style="color:#fff;font-size:13px;margin-top:2px">${(r.nomCommun||"").toUpperCase()}</div><div style="color:#ccc;font-style:italic;font-family:'VT323',monospace;font-size:14px;margin-top:2px">${r.nomScientifique||""}</div></div><button onclick="closeModal()" style="position:absolute;top:10px;right:10px;background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:50%;width:28px;height:28px;cursor:pointer;font-size:14px">×</button></div>`:`<div style="padding:14px 14px 0;display:flex;justify-content:space-between;align-items:flex-start"><div><div style="color:#00ff88;font-size:14px">#${r.numero}</div><div style="color:#fff;font-size:11px;margin-top:4px">${(r.nomCommun||"").toUpperCase()}</div><div style="color:#888;font-style:italic;font-family:'VT323',monospace;font-size:13px;margin-top:2px">${r.nomScientifique||""}</div></div><button onclick="closeModal()" style="background:transparent;color:#ff9999;border:1px solid #660000;border-radius:4px;padding:4px 8px;cursor:pointer;font-size:10px">✕</button></div>`}
+    <div style="padding:14px">
+      <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">${badge(r.type1)}${badge(r.type2)}<span style="background:${cc};color:#fff;font-size:9px;font-weight:700;font-family:'Press Start 2P',monospace;padding:3px 7px;border-radius:4px;border:2px solid rgba(0,0,0,0.3)">${r.conservation}</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px">${[["CLASSE",r.classe],["RÉGIME",r.regime],["TAILLE",r.taille],["POIDS",r.poids]].map(([l,v])=>`<div style="background:rgba(0,255,100,0.05);border:1px solid #004422;border-radius:4px;padding:5px 7px"><div style="color:#006622;font-size:7px;margin-bottom:2px">${l}</div><div style="color:#aaffcc;font-size:8px">${v||"—"}</div></div>`).join("")}</div>
+      <div style="background:#0d1a0d;border-radius:8px;padding:12px;margin-bottom:10px;position:relative"><div class="scanlines"></div>${statBar("VITALITÉ",cv[r.conservation]||50,"#00cc55")}${statBar("RARETÉ",100-(cv[r.conservation]||50),"#ff6644")}${statBar("CONFIANCE",r.confiance==="haute"?90:r.confiance==="moyenne"?60:35,"#44aaff")}</div>
+      ${infoBox("HABITAT","rgba(0,100,50,0.1)","#003322","#006622","#88ccaa",r.habitat)}
+      ${infoBox("DONNÉES","rgba(0,50,100,0.1)","#001133","#004488","#88aacc",r.description)}
+      ${infoBox("⚡ FAIT RARE","rgba(100,80,0,0.1)","#332200","#664400","#ccaa66",r.anecdote)}
+      <div style="text-align:center;margin-top:8px"><div style="font-size:8px;color:${cc}">${r.conservationLabel||""}</div><div style="font-size:7px;color:#555;margin-top:4px">Scanné le ${entry.date}</div></div>
+    </div>
+  </div>`;
+}
+function closeModal(){document.getElementById("modal").style.display="none";}
 
+// ── Main render ───────────────────────────────────────────────────────────────
+function render(){
+  const{tab,collTab,apiKey,showKey,loading,converting,result,error,collection}=S;
+  const isWorking=loading||converting;
+  const dr=result;
+  const lens=isWorking?"radial-gradient(circle,#aaddff,#0066cc)":dr?.found?"radial-gradient(circle,#aaffcc,#008844)":"radial-gradient(circle,#99ccff,#003399)";
+
+  document.getElementById("app").innerHTML=`
+  <div style="min-height:100vh;background:linear-gradient(135deg,#1a0000,#2d0000 40%,#1a0505);display:flex;align-items:flex-start;justify-content:center;padding:20px 14px 40px">
+    <div style="width:100%;max-width:460px;background:linear-gradient(160deg,#cc0000,#990000 60%,#7a0000);border-radius:16px 16px 12px 12px;box-shadow:0 0 0 3px #ff3333,0 0 0 5px #880000,0 20px 60px rgba(0,0,0,0.8);overflow:hidden">
+
+      <div style="padding:22px 18px 14px;border-bottom:3px solid #880000;display:flex;align-items:center;gap:12px">
+        <div style="display:flex;flex-direction:column;gap:4px">${led(!isWorking&&!!dr?.found,"#00ff88")}${led(isWorking,"#ffaa00")}${led(!!error,"#ff2200")}</div>
+        <div style="width:52px;height:52px;border-radius:50%;flex-shrink:0;background:${lens};border:4px solid #fff;box-shadow:0 0 0 3px #888,0 0 20px rgba(100,200,255,0.5)${isWorking?";animation:blink 0.5s infinite":""}"></div>
+        <div><div style="color:#fff;font-size:13px;font-weight:700;letter-spacing:1px;text-shadow:2px 2px 0 #660000">ANIMALdex</div><div style="color:#ffaaaa;font-size:7px;margin-top:4px">ZOOLOGICAL SCANNER v5.0</div></div>
+        <div style="margin-left:auto;display:flex;gap:6px">${["#ff6666","#ffaa44","#44aaff"].map(c=>`<div style="width:13px;height:13px;border-radius:50%;background:${c};border:2px solid rgba(0,0,0,0.3)"></div>`).join("")}</div>
+      </div>
+
+      <div style="display:flex;border-bottom:2px solid #880000">
+        ${[["scan","🔍 SCAN"],["collection",`📚 (${collection.length})`],["map","🌍 MAP"]].map(([key,label])=>`<button onclick="set({tab:'${key}'})" class="btn" style="flex:1;padding:10px 4px;background:${tab===key?"#1a0a0a":"transparent"};color:${tab===key?"#00ff88":"#ff9999"};font-size:6px;border-bottom:${tab===key?"2px solid #00ff88":"none"}">${label}</button>`).join("")}
+      </div>
+
+      ${tab==="scan"?`<div style="padding:14px 16px">
+        ${showKey?`<div style="background:#1a0a0a;border:2px solid #440000;border-radius:8px;padding:12px;margin-bottom:12px">
+          <div style="color:#ff6666;font-size:7px;margin-bottom:6px">CLÉ API ANTHROPIC :</div>
+          <div style="color:#ff9944;font-size:6px;margin-bottom:8px;line-height:1.9">console.anthropic.com → API Keys</div>
+          <div style="display:flex;gap:8px"><input id="keyIn" type="password" placeholder="sk-ant-api03-..." value="${apiKey}" style="flex:1;background:#0d0505;border:1px solid #440000;color:#ff9999;padding:6px 8px;border-radius:4px;font-family:monospace;font-size:11px;outline:none"/>
+          <button onclick="saveKey()" class="btn" style="background:#cc0000;color:#fff;padding:6px 10px;border-radius:4px;font-size:7px">OK</button></div>
+        </div>`:`<div onclick="set({showKey:true})" style="background:#0a1a0a;border:1px solid #003300;border-radius:6px;padding:6px 10px;margin-bottom:10px;cursor:pointer;display:flex;justify-content:space-between"><span style="color:#006622;font-size:7px">✓ CLÉ API OK</span><span style="color:#444;font-size:7px">modifier ›</span></div>`}
+        <div style="background:#0d1a0d;border-radius:8px;border:3px solid #222;overflow:hidden;position:relative;min-height:240px;box-shadow:inset 0 0 30px rgba(0,0,0,0.8)"><div class="scanlines"></div>${screenHTML()}</div>
+        ${detailPanelHTML()}
+        <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
+          <input id="fileInput" type="file" accept="image/*,.heic,.heif" onchange="handleFile(this)"/>
+          <input id="camInput" type="file" accept="image/*" capture="environment" onchange="handleFile(this)"/>
+          <button onclick="document.getElementById('fileInput').click()" ${isWorking?"disabled":""} class="btn" style="flex:1;background:${isWorking?"#440000":"linear-gradient(180deg,#ff4444,#cc0000)"};color:#fff;border:3px solid #880000;border-radius:8px;padding:10px 6px;font-size:7px;box-shadow:${isWorking?"none":"0 4px 0 #660000"}">📁 PHOTO</button>
+          <button onclick="document.getElementById('camInput').click()" ${isWorking?"disabled":""} class="btn" style="flex:1;background:${isWorking?"#440000":"linear-gradient(180deg,#ff4444,#cc0000)"};color:#fff;border:3px solid #880000;border-radius:8px;padding:10px 6px;font-size:7px;box-shadow:${isWorking?"none":"0 4px 0 #660000"}">📷 CAMÉRA</button>
+          <button onclick="resetScan()" class="btn" style="width:44px;height:44px;background:linear-gradient(180deg,#882200,#661100);color:#ffaaaa;border:3px solid #550000;border-radius:8px;font-size:18px;box-shadow:0 4px 0 #440000">↺</button>
+        </div>
+      </div>`:""}
+
+      ${tab==="collection"?`<div>
+        <div style="display:flex;border-bottom:1px solid #440000">
+          ${[["grid","⊞ GRILLE"],["stats","📊 STATS"]].map(([k,l])=>`<button onclick="set({collTab:'${k}'})" class="btn" style="flex:1;padding:8px 4px;background:${collTab===k?"#0d1a0d":"transparent"};color:${collTab===k?"#00ff88":"#886666"};font-size:6px;border-bottom:${collTab===k?"2px solid #00ff88":"none"}">${l}</button>`).join("")}
+        </div>
+        <div style="padding:10px 12px">
+          ${collTab==="grid"?collectionGridHTML():statsHTML()}
+        </div>
+      </div>`:""}
+
+      ${tab==="map"?mapHTML():""}
+
+      <div style="height:12px;background:repeating-linear-gradient(90deg,#880000 0,#880000 8px,#770000 8px,#770000 16px);border-top:2px solid #660000"></div>
+    </div>
+  </div>`;
+
+  if(tab==="map")initMap();
+}
+
+// ── D3 Map init ───────────────────────────────────────────────────────────────
+function initMap(){
+  const svg=document.getElementById("worldmap");
+  if(!svg||svg.dataset.init==="1")return;
+  svg.dataset.init="1";
+  if(!window.d3||!window.topojson){setTimeout(initMap,200);return;}
+  const W=460,H=230;
+  const d3=window.d3,topo=window.topojson;
+  const s=d3.select(svg).attr("viewBox",`0 0 ${W} ${H}`).attr("width","100%");
+  s.append("rect").attr("width",W).attr("height",H).attr("fill","#0a1628");
+  const proj=d3.geoNaturalEarth1().scale(75).translate([W/2,H/2]);
+  const path=d3.geoPath(proj);
+  const graticule=d3.geoGraticule()();
+  s.append("path").datum(graticule).attr("d",path).attr("fill","none").attr("stroke","#1a3a6a").attr("stroke-width",0.3);
+
+  const countryToRegion={};
+  Object.entries(REGION_IDS).forEach(([region,ids])=>ids.forEach(id=>countryToRegion[id]=region));
+
+  fetch("https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json")
+    .then(r=>r.json())
+    .then(world=>{
+      const countries=topo.feature(world,world.objects.countries);
+      s.selectAll(".c").data(countries.features).join("path")
+        .attr("class","c").attr("d",path)
+        .attr("fill",d=>getMapColor(countryToRegion[parseInt(d.id)])||"#1a2a1a")
+        .attr("stroke","#0a1a0a").attr("stroke-width",0.4)
+        .style("cursor","pointer")
+        .on("mouseover",function(event,d){
+          const region=countryToRegion[parseInt(d.id)];
+          d3.select(this).attr("stroke","#00ff88").attr("stroke-width",1.2);
+          const tt=document.getElementById("map-tooltip");
+          if(tt&&region){
+            const count=S.collection.filter(e=>(e.result.region||"Mondial")===region).length;
+            tt.style.display="block";
+            tt.style.left=Math.min(event.offsetX+8,300)+"px";
+            tt.style.top=Math.max(event.offsetY-30,4)+"px";
+            tt.innerHTML=`<div style="color:#00ff88;font-size:7px;font-family:'Press Start 2P',monospace">${region}</div><div style="color:#aaffcc;font-size:12px;font-family:'VT323',monospace;margin-top:2px">${count} espèce${count>1?"s":""}</div>`;
+            set({hoveredRegion:region});
+          }
+        })
+        .on("mouseout",function(){
+          d3.select(this).attr("stroke","#0a1a0a").attr("stroke-width",0.4);
+          const tt=document.getElementById("map-tooltip");
+          if(tt)tt.style.display="none";
+          set({hoveredRegion:null});
+        });
+      s.append("path").datum(topo.mesh(world,world.objects.countries,(a,b)=>a!==b))
+        .attr("d",path).attr("fill","none").attr("stroke","#0a1a0a").attr("stroke-width",0.3);
+    }).catch(()=>{});
+}
+
+// ── Actions ───────────────────────────────────────────────────────────────────
+function saveKey(){const v=(document.getElementById("keyIn")||{}).value||"";if(!v.trim())return;localStorage.setItem(KEY_KEY,v.trim());set({apiKey:v.trim(),showKey:false});}
+function resetScan(){set({image:null,result:null,error:null,scanning:false,loading:false,converting:false,progress:0});}
+function handleFile(input){const f=input.files[0];input.value="";if(!f)return;if(!S.apiKey){set({error:"Entre ta clé API d'abord !"});return;}processImage(f);}
+
+async function processImage(file){
+  set({result:null,error:null,image:null,converting:true,scanning:false,loading:false,progress:0});
+  let jpeg;
+  try{jpeg=await convertToJpeg(file);}catch(e){set({error:e.message,converting:false});return;}
+  set({converting:false,image:jpeg,scanning:true,loading:true,progress:0});
   let prog=0;
   const iv=setInterval(()=>{prog+=Math.random()*11;if(prog>=88){prog=88;clearInterval(iv);}set({progress:Math.min(prog,88)});},180);
-
   try{
     const base64=jpeg.split(",")[1];
-    // Appel au proxy Vercel — pas de clé API exposée
     const res=await fetch("/api/scan",{
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
+      method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({imageBase64:base64,mediaType:"image/jpeg"})
     });
     clearInterval(iv);
     const data=await res.json();
     if(!res.ok)throw new Error(data.error||"Erreur serveur "+res.status);
-
     if(data.found){
       const entry={id:Date.now(),date:new Date().toLocaleDateString("fr-FR"),image:jpeg,result:data};
       saveCollection([entry,...S.collection]);
     }
     set({result:data,scanning:false,loading:false,progress:100});
-  }catch(e){
-    clearInterval(iv);
-    set({error:e.message,scanning:false,loading:false,progress:0});
-  }
+  }catch(e){clearInterval(iv);set({error:e.message,scanning:false,loading:false,progress:0});}
 }
 
 if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
