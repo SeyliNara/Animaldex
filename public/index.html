@@ -402,11 +402,12 @@ function render(){
 // ── D3 Map init ───────────────────────────────────────────────────────────────
 function initMap(){
   const svg=document.getElementById("worldmap");
-  if(!svg||svg.dataset.init==="1")return;
-  svg.dataset.init="1";
-  if(!window.d3||!window.topojson){setTimeout(initMap,200);return;}
-  const W=460,H=230;
+  if(!svg)return;
   const d3=window.d3,topo=window.topojson;
+  if(!d3||!topo){setTimeout(()=>initMap(),300);return;}
+  // Clear previous render
+  d3.select(svg).selectAll("*").remove();
+  const W=460,H=230;
   const s=d3.select(svg).attr("viewBox",`0 0 ${W} ${H}`).attr("width","100%");
   s.append("rect").attr("width",W).attr("height",H).attr("fill","#0a1628");
   const proj=d3.geoNaturalEarth1().scale(75).translate([W/2,H/2]);
